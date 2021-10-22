@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 """Co-eye classifier.
 
-
-
-__author__ = ["zabdallah","BINAYKUMAR943"]
 Ensemble Classifier
 """
 import warnings
@@ -27,26 +24,27 @@ from sklearn.model_selection import cross_val_score
 from sklearn.metrics import classification_report
 import os
 from sktime.classification.base import BaseClassifier
+from sklearn.utils.multiclass import class_distribution
 
 
 class CoEye(BaseClassifier):
-    """A Multi-resolution Symbolic Representation to TimeSeries Diversified Ensemble Classification( Co-eye)
-    Implementation of Co-eye from abdallah2020co( 2020).
+    """A Multi-resolution ensemble classifier for symbolically approximated time series.
+
+    Implementation of Co-eye from Abdallah2020( 2020).[1]
 
     Overview: Input "n" series of length "m". Co-eye loops through different combination of
-    of parameters and evaluates each with a five fold cross validation. It then retains
-    all ensemble members within 99% of the best by default for use in the ensemble.
-    There are three primary parameters:
-        - alpha: alphabet size
-        - w: window length
+    of parameters(alpha and w) and calculate accuracy for each classifier using five fold cross
+    validation. It retains all the classifiers which gives maximum accuracy or very
+    close to it( with 1 percent margin) in the ensemble.
 
+    _fit involves finding parameters pairs giving maximum accuracy or very close to it.
 
-    Hyper-parameters
-    ----------------
-    aplha : int
-        alphabet size
-    wordLength : int
-        word size in SAX and number of fourier coefficient in SFA.
+    Hyper-parameters:
+    ------------------
+        alpha: int
+        alpha is the alphabet size
+        w: int
+        w is the word size in SAX and number of fourier coefficients in SFA
 
     Attributes
     ----------
@@ -63,9 +61,18 @@ class CoEye(BaseClassifier):
        List of RandomForest classifiers.
     class_dictionary: dict
         Dictionary of classes. Extracted from the data.
+
+
+    References
+    --------------
+    [1]: Abdallah, Z.S., Gaber, M.M. Co-eye: a multi-resolution ensemble classifier
+    for symbolically approximated time series. Mach Learn 109, 2029–2061 (2020).
+    https://doi.org/10.1007/s10994-020-05887-3
     """
 
     _tags = {
+        "coerce-X-to-numpy": True,
+        "coerce-X-to-pandas": False,
         "capability:multivariate": False,
         "capability:unequal_length": False,
         "capability:missing_values": False,
@@ -79,25 +86,49 @@ class CoEye(BaseClassifier):
         random_state=None,
     ):
         self.smote = smote
+        self.random_state = random_state
         self.RFmatrices = []
         self.All_Acc = []
         self.SFA_acc = []
         self.SFA_pairs = []
         self.SAX_pairs = []
         self.classifiers = []
+        self.n_classes = 0
+        self.classes_ = []
+        self._class_dictionary = {}
         super(CoEye, self).__init__()
 
     def _fit(self, X, y):
-
+        """Fit time series classifier to training data.
+        core logic
+        Parameters
+        ----------
+        X : 3D np.array, array-like or sparse matrix
+                of shape = [n_instances,n_dimensions,series_length]
+                or shape = [n_instances,series_length]
+            or single-column pd.DataFrame with pd.Series entries
+        y : array-like, shape = [n_instances] - the class labels
+        Returns
+        -------
+        self : reference to self.
+        State change
+        ------------
+        creates fitted model (attributes ending in "_")
+        """
+        # Changing three dimensional X to two dimension.
         X = X.reshape(X.shape[0], -1)
+
         min_neighbours = min(Counter(y).items(), key=lambda k: k[1])[1]
         max_neighbours = max(Counter(y).items(), key=lambda k: k[1])[1]
+        self.n_classes = np.unique(y).shape[0]
+        self.classes_ = class_distribution(np.asarray(y).reshape(-1, 1))[0][0]
+        for index, classVal in enumerate(self.classes_):
+            self._class_dictionary[classVal] = index
 
         if min_neighbours == max_neighbours:
 
             self.SMOTE_Xtrain = X
             self.SMOTE_ytrain = y
-            # self.n_classes = np.unique(y).shape[0]
 
             # Apply SMOTE if data is imbalanced
         else:
@@ -152,6 +183,18 @@ class CoEye(BaseClassifier):
         # Classification Phase
 
     def _predict(self, X):
+        """Predict labels for sequences in X.
+        core logic
+        Parameters
+        ----------
+        X : 3D np.array, array-like or sparse matrix
+                of shape = [n_instances,n_dimensions,series_length]
+                or shape = [n_instances,series_length]
+            or single-column pd.DataFrame with pd.Series entries
+        Returns
+        -------
+        y : array-like, shape =  [n_instances] - predicted class labels
+        """
         X = X.reshape(X.shape[0], -1)
         clf_nbr = 0
 
@@ -163,7 +206,7 @@ class CoEye(BaseClassifier):
             X_test_SFA = SFA.fit_transform(X)
             RF_clf = self.classifiers[clf_nbr]
             model_pred = RF_clf.predict_proba(X_test_SFA)
-            self.n_classes = RF_clf.classes_
+            # self.n_classes=RF_clf.classes_
             # accumulate RFmatrices for a lense
             self.RFmatrices.append(model_pred)
             clf_nbr = clf_nbr + 1
@@ -187,30 +230,30 @@ class CoEye(BaseClassifier):
         return y_pred
 
     # Find the most confident label across lenses in one representation (either SAX or SFA)
-    def _mostConf_one(self, matrcies, labels):
-        # Marerices is of length L: number of lenses/forests
-        # Each matrix in matrices is the probalistic accuracy of test data
-        # Matrix of size m X n: where m is the number of test instances,n is the number of classes
-        predLabels = []
-        # For each test data
-        for row in range(len(matrcies[0])):
-            maxConf = 0
-            # For each Forest/lense
-            for mat in matrcies:
-                for col in range(len(labels)):
-                    if mat[row][col] > maxConf:
-                        maxConf = mat[row][col]
-                        Conflabel = labels[col]
-            # Return the most confident lable across lenses
-            predLabels.append(Conflabel)
-        return predLabels
+    # def _mostConf_one(self, matrcies, labels):
+    #     # Marerices is of length L: number of lenses/forests
+    #     # Each matrix in matrices is the probalistic accuracy of test data
+    #     # Matrix of size m X n: where m is the number of test instances,n is the number of classes
+    #     predLabels = []
+    #     # For each test data
+    #     for row in range(len(matrcies[0])):
+    #         maxConf = 0
+    #         # For each Forest/lense
+    #         for mat in matrcies:
+    #             for col in range(len(labels)):
+    #                 if mat[row][col] > maxConf:
+    #                     maxConf = mat[row][col]
+    #                     Conflabel = labels[col]
+    #         # Return the most confident lable across lenses
+    #         predLabels.append(Conflabel)
+    #     return predLabels
 
-    # ### Implementation of Vote function described in Section 4.3 in the paper
+    # ### Implementation of Vote function
 
     # #Find the most confident labeles across lenses of the two representations ( SAX and SFA)
 
     def _mostConf_multi(self, matrcies, labels, sfa_n):
-        # Marerices is of length L: number of lenses/forests (total for SAX and SFA)
+        # Matrices is of length L: number of lenses/forests (total for SAX and SFA)
         # Each matrix in matrices is the probalistic accuracy of test data
         # Matrix of size m X n: where m is the number of test instances,n is the number of classes (labels)
         # Sax_n number of lenses in SFA
@@ -420,3 +463,27 @@ class CoEye(BaseClassifier):
         print("SAX pamaeter selection, done!")
 
         return pairs
+
+    def _predict_proba(self, X):
+        """Predict class probabilities for n instances in X.
+
+        Parameters
+        ----------
+        X : pd.DataFrame of shape (n_instances, 1)
+
+        Returns
+        -------
+        dists : array of shape (n_instances, n_classes)
+            Predicted probability of each class.
+        """
+        preds = self._predict(X)
+        print(X.shape[0])
+        print(type(X))
+        print(self.n_classes)
+
+        dists = np.zeros((X.shape[0], self.n_classes))
+
+        for i in range(0, X.shape[0]):
+            dists[i, self._class_dictionary.get(preds[i])] += 1
+
+        return dists
